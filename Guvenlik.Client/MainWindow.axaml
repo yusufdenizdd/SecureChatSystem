@@ -1,0 +1,41 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Guvenlik.Client.MainWindow"
+        Title="IZU - Secure Client" Width="700" Height="600">
+    <StackPanel Margin="20" Spacing="15">
+        <TextBlock Text="Client Kontrol Paneli" FontSize="20" FontWeight="Bold"/>
+
+        <Border BorderBrush="Gray" BorderThickness="1" CornerRadius="5" Padding="10">
+            <StackPanel Spacing="10">
+                <TextBlock Text="1. Adım: Kimlik ve Sertifika" FontWeight="Bold"/>
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                    <TextBlock VerticalAlignment="Center" Text="Benim Adım:"/>
+                    <TextBox Name="txtMyName" Text="Client1" Width="100"/>
+                    <Button Name="btnGetCert" Content="CA'dan Sertifika Al" Click="BtnGetCert_Click"/>
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <Border BorderBrush="Gray" BorderThickness="1" CornerRadius="5" Padding="10">
+            <StackPanel Spacing="10">
+                <TextBlock Text="2. Adım: P2P Bağlantı" FontWeight="Bold"/>
+                
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                    <TextBlock VerticalAlignment="Center" Text="Dinleme Portum:"/>
+                    <TextBox Name="txtMyPort" Text="6000" Width="60"/>
+                    <Button Name="btnListen" Content="Dinlemeye Başla" Click="BtnListen_Click"/>
+                </StackPanel>
+
+                <Separator/>
+
+                <StackPanel Orientation="Horizontal" Spacing="10">
+                    <TextBlock VerticalAlignment="Center" Text="Arkadaşın Portu:"/>
+                    <TextBox Name="txtTargetPort" Text="7000" Width="60"/>
+                    <Button Name="btnConnect" Content="Arkadaşa Bağlan" Click="BtnConnect_Click"/>
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <TextBox Name="txtLog" Height="250" AcceptsReturn="True" IsReadOnly="True" TextWrapping="Wrap" />
+    </StackPanel>
+</Window>
