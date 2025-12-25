@@ -31,7 +31,7 @@ namespace Guvenlik.CA
             try
             {
                 _server = new CAServer(logger);
-                _server.Start(5050); // 5000 Portundan başlat
+                _server.Start(5050); // 5050 Portundan başlat
 
                 var btn = this.FindControl<Button>("btnBaslat");
                 btn.IsEnabled = false; // İkinci kez basılmasın
