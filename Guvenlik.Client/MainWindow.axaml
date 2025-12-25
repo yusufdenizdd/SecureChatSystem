@@ -27,7 +27,7 @@
 
         <TextBlock Text="Sohbet Geçmişi (Şifresi Çözülmüş Hali):" FontWeight="Bold"/>
         <TextBox Name="txtChatHistory" Height="200" AcceptsReturn="True" IsReadOnly="True" 
-                 Background="#f0f0f0" BorderBrush="Black" BorderThickness="1"/>
+                 Background="#000" BorderBrush="Gray" BorderThickness="1"/>
 
         <StackPanel Orientation="Horizontal" Spacing="10">
             <TextBox Name="txtMessage" Watermark="Mesajınızı yazın..." Width="600"/>
