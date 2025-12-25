@@ -12,23 +12,24 @@ namespace Guvenlik.CA
     {
         private TcpListener _listener;
         private bool _isRunning;
-
-        // CA'nın kendi anahtarları
         public string CAPublicKey { get; private set; }
         private string CAPrivateKey;
-
-        // Logları ekrana yazdırmak için bir "Eylem" (Action) tanımlıyoruz
         private Action<string> _logger;
 
         public CAServer(Action<string> logger)
         {
             _logger = logger;
-            // 1. Uygulama açılınca CA kendi anahtarlarını üretir
+            _logger("--- CA BAŞLATILIYOR ---");
+
+            // 1. Anahtar Üretimi Detaylı Log
+            _logger("ADIM 1: CA kendi RSA Anahtar Çiftini (2048-bit) üretiyor...");
             CryptoHelper.GenerateRSAKeys(out string pub, out string priv);
             CAPublicKey = pub;
             CAPrivateKey = priv;
-            _logger("CA Anahtarları üretildi.");
-            _logger("CA Public Key: " + CAPublicKey.Substring(0, 20) + "...");
+
+            _logger($"-> CA Public Key Oluştu (İlk 30 krktr): {CAPublicKey.Substring(0, 30)}...");
+            _logger($"-> CA Private Key Oluştu (Gizli): {CAPrivateKey.Substring(0, 30)}...");
+            _logger("------------------------------------------------");
         }
 
         public void Start(int port)
@@ -36,9 +37,7 @@ namespace Guvenlik.CA
             _listener = new TcpListener(IPAddress.Any, port);
             _listener.Start();
             _isRunning = true;
-            _logger($"CA Server {port} portunda dinlemeye başladı...");
-
-            // Arka planda sürekli müşteri bekle
+            _logger($"ADIM 2: CA Server {port} portunda dinlemeye başladı. İstek bekleniyor...");
             Task.Run(() => AcceptClients());
         }
 
@@ -49,14 +48,10 @@ namespace Guvenlik.CA
                 try
                 {
                     var client = await _listener.AcceptTcpClientAsync();
-                    _logger("Yeni bir istemci bağlandı.");
-                    // Her istemciyi ayrı bir kanalda (Task) işle
+                    _logger("ADIM 3: Yeni bir bağlantı isteği geldi!");
                     _ = Task.Run(() => HandleClient(client));
                 }
-                catch (Exception ex)
-                {
-                    _logger("Hata: " + ex.Message);
-                }
+                catch (Exception ex) { _logger("Hata: " + ex.Message); }
             }
         }
 
@@ -65,35 +60,33 @@ namespace Guvenlik.CA
             try
             {
                 NetworkStream stream = client.GetStream();
-                byte[] buffer = new byte[4096];
+                byte[] buffer = new byte[8192];
                 int bytesRead = stream.Read(buffer, 0, buffer.Length);
                 string receivedData = Encoding.UTF8.GetString(buffer, 0, bytesRead);
 
-                // Gelen veriyi Pakete çevir
                 Packet receivedPacket = Packet.FromJson(receivedData);
 
-                if (receivedPacket.Header == "CERT_REQ") // Sertifika İsteği Geldiyse
+                if (receivedPacket.Header == "CERT_REQ")
                 {
-                    _logger($"{receivedPacket.SenderID} sertifika istiyor...");
+                    _logger($"ADIM 4: {receivedPacket.SenderID} kullanıcısından Sertifika İsteği alındı.");
+                    _logger($"-> Gelen Veri Boyutu: {receivedData.Length} bytes");
 
-                    // 1. İstemcinin gönderdiği Ham Sertifika bilgisini al
                     Certificate clientCert = JsonSerializer.Deserialize<Certificate>(receivedPacket.Payload);
+                    _logger($"-> İstemcinin Public Key'i alındı: {clientCert.PublicKey.Substring(0, 30)}...");
 
-                    // 2. Sertifikayı CA Bilgileriyle doldur
-                    //clientCert.IssuerID = "IZU_CA_SERVER";
-                    // Doğrulama yapabilmek için IssuerID alanına CA'nın Public Key'ini koyuyoruz
-                    clientCert.IssuerID = CAPublicKey;
+                    // Sertifikayı Doldur
+                    clientCert.IssuerID = CAPublicKey; // Doğrulama için CA Public Key'i koyuyoruz
                     clientCert.ValidFrom = DateTime.Now;
                     clientCert.ValidTo = DateTime.Now.AddYears(1);
 
-                    // 3. Sertifikanın özetini çıkar ve CA Private Key ile imzala
-                    // İmzalanacak veri: SubjectID + PublicKey
+                    // İmzalama İşlemi Detayı
+                    _logger("ADIM 5: Sertifika İmzalanıyor (Signing)...");
                     string dataToSign = clientCert.SubjectID + clientCert.PublicKey;
+                    _logger($"-> İmzalanacak Ham Veri (SubjectID+PubKey): {dataToSign.Substring(0, 20)}...");
+
                     clientCert.Signature = CryptoHelper.SignData(dataToSign, CAPrivateKey);
+                    _logger($"-> Dijital İmza Oluşturuldu (İlk 30 krktr): {clientCert.Signature.Substring(0, 30)}...");
 
-                    _logger($"{receivedPacket.SenderID} için sertifika imzalandı.");
-
-                    // 4. İmzalı sertifikayı geri gönder
                     Packet responsePacket = new Packet
                     {
                         Header = "CERT_RES",
@@ -103,14 +96,12 @@ namespace Guvenlik.CA
 
                     byte[] responseBytes = Encoding.UTF8.GetBytes(responsePacket.ToJson());
                     stream.Write(responseBytes, 0, responseBytes.Length);
+                    _logger($"ADIM 6: İmzalı Sertifika {receivedPacket.SenderID}'ye gönderildi.");
+                    _logger("------------------------------------------------");
                 }
-
                 client.Close();
             }
-            catch (Exception ex)
-            {
-                _logger("İstemci işlem hatası: " + ex.Message);
-            }
+            catch (Exception ex) { _logger("İstemci işlem hatası: " + ex.Message); }
         }
     }
 }

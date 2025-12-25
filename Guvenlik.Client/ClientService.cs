@@ -18,16 +18,12 @@ namespace Guvenlik.Client
         public string CAPublicKey { get; private set; }
 
         private TcpListener _p2pListener;
-        private TcpClient _activePeerClient; // O an konuştuğumuz arkadaş
+        private TcpClient _activePeerClient;
         private NetworkStream _activeStream;
         private Action<string> _logger;
-        private Action<string> _chatLogger; // Ekrana chat mesajı basmak için
+        private Action<string> _chatLogger;
 
-        // Simetrik Anahtar (AES)
         private string _masterKey;
-        // IV (Initialization Vector) - AES için gereklidir, sabit veya dinamik olabilir.
-        // Basitlik adına burada sabit türetiyoruz veya MasterKey ile taşıyabiliriz. 
-        // Projede kolaylık olsun diye MasterKey'in ilk 16 karakterini IV gibi kullanacağız.
         private string _iv;
 
         public ClientService(string myId, Action<string> logger, Action<string> chatLogger)
@@ -35,16 +31,22 @@ namespace Guvenlik.Client
             MyID = myId;
             _logger = logger;
             _chatLogger = chatLogger;
-            _logger("RSA Anahtarları üretiliyor...");
+
+            _logger($"=== {MyID.ToUpper()} BAŞLATILIYOR ===");
+            _logger("ADIM 1: RSA Anahtar Çifti Üretiliyor...");
             CryptoHelper.GenerateRSAKeys(out string pub, out string priv);
             MyPublicKey = pub;
             MyPrivateKey = priv;
+            _logger($"-> My Public Key: {MyPublicKey.Substring(0, 20)}...");
+            _logger($"-> My Private Key: {MyPrivateKey.Substring(0, 20)}...");
+            _logger("-------------------------------------------");
         }
 
         public async Task<bool> GetCertificateFromCA(string caIp, int caPort)
         {
             try
             {
+                _logger($"ADIM 2: CA ({caIp}:{caPort}) ile bağlantı kuruluyor...");
                 using (TcpClient client = new TcpClient())
                 {
                     await client.ConnectAsync(caIp, caPort);
@@ -55,6 +57,7 @@ namespace Guvenlik.Client
 
                     byte[] data = Encoding.UTF8.GetBytes(reqPacket.ToJson());
                     await stream.WriteAsync(data, 0, data.Length);
+                    _logger("-> Sertifika İsteği gönderildi. Cevap bekleniyor...");
 
                     byte[] buffer = new byte[8192];
                     int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
@@ -64,7 +67,9 @@ namespace Guvenlik.Client
                     {
                         MyCertificate = JsonSerializer.Deserialize<Certificate>(resPacket.Payload);
                         CAPublicKey = MyCertificate.IssuerID;
-                        _logger("Sertifika alındı. CA Public Key kaydedildi.");
+                        _logger($"ADIM 3: CA'dan İmzalı Sertifika Alındı!");
+                        _logger($"-> CA İmzası: {MyCertificate.Signature.Substring(0, 20)}...");
+                        _logger("-> CA Public Key Kaydedildi (Doğrulama için).");
                         return true;
                     }
                 }
@@ -79,7 +84,7 @@ namespace Guvenlik.Client
             {
                 _p2pListener = new TcpListener(IPAddress.Any, port);
                 _p2pListener.Start();
-                _logger($"P2P Sunucusu {port} portunda başlatıldı. Arkadaş bekleniyor...");
+                _logger($"ADIM 4 (Server Modu): {port} portunda dinlemeye başlandı.");
                 Task.Run(() => AcceptPeerConnection());
             }
             catch (Exception ex) { _logger("P2P Başlatma Hatası: " + ex.Message); }
@@ -88,7 +93,7 @@ namespace Guvenlik.Client
         private async Task AcceptPeerConnection()
         {
             var client = await _p2pListener.AcceptTcpClientAsync();
-            _logger("Bir arkadaş bağlandı! El sıkışma başlıyor...");
+            _logger("ADIM 5: Bir arkadaş bağlandı! Handshake başlıyor...");
             _ = Task.Run(() => HandlePeerConversation(client, false));
         }
 
@@ -98,7 +103,7 @@ namespace Guvenlik.Client
             {
                 TcpClient client = new TcpClient();
                 await client.ConnectAsync(ip, port);
-                _logger($"Arkadaşa ({ip}:{port}) bağlanıldı.");
+                _logger($"ADIM 4 (Client Modu): Arkadaşa ({ip}:{port}) bağlanıldı.");
                 await HandlePeerConversation(client, true);
             }
             catch (Exception ex) { _logger("Bağlantı Hatası: " + ex.Message); }
@@ -112,39 +117,60 @@ namespace Guvenlik.Client
 
             try
             {
-                // 1. Sertifika Takası
+                // --- SERTİFİKA TAKASI ---
+                _logger("ADIM 6: Sertifika Takası Başlıyor...");
                 Packet myCertPacket = new Packet { Header = "EXCHANGE_CERT", SenderID = MyID, Payload = JsonSerializer.Serialize(MyCertificate) };
                 byte[] myCertBytes = Encoding.UTF8.GetBytes(myCertPacket.ToJson());
                 await _activeStream.WriteAsync(myCertBytes, 0, myCertBytes.Length);
+                _logger("-> Benim sertifikam gönderildi.");
 
                 int bytesRead = await _activeStream.ReadAsync(buffer, 0, buffer.Length);
                 Packet peerPacket = Packet.FromJson(Encoding.UTF8.GetString(buffer, 0, bytesRead));
                 PeerCertificate = JsonSerializer.Deserialize<Certificate>(peerPacket.Payload);
+                _logger($"-> Arkadaşın ({PeerCertificate.SubjectID}) sertifikası alındı.");
 
-                _logger($"Arkadaşın ({PeerCertificate.SubjectID}) sertifikası doğrulandı.");
+                // --- DOĞRULAMA ---
+                _logger("ADIM 7: Arkadaşın Sertifikası Doğrulanıyor (Verify)...");
+                string dataToVerify = PeerCertificate.SubjectID + PeerCertificate.PublicKey;
+                bool isVerified = CryptoHelper.VerifyData(dataToVerify, PeerCertificate.Signature, CAPublicKey);
 
-                // 2. Master Key Anlaşması
+                if (!isVerified)
+                {
+                    _logger("!!! HATA: İmza Doğrulanamadı! Bağlantı kesiliyor.");
+                    return;
+                }
+                _logger("-> BAŞARILI: İmza CA tarafından onaylanmış. Güvenli.");
+
+                // --- MASTER KEY (AES) OLUŞTURMA VE AKTARMA ---
                 if (isInitiator)
                 {
+                    _logger("ADIM 8: Master Key (AES) Üretiliyor...");
                     CryptoHelper.GenerateAESKeys(out string mk, out string iv);
                     _masterKey = mk;
-                    // IV'yi de karşıya göndermemiz lazım, şimdilik basitlik için mk ile türetiyoruz
+                    _logger($"-> Oluşan AES Key (Plain): {_masterKey.Substring(0, 20)}...");
 
+                    _logger("-> Master Key, Karşı tarafın RSA Public Key'i ile şifreleniyor...");
                     string encryptedMasterKey = CryptoHelper.EncryptRSA(_masterKey, PeerCertificate.PublicKey);
+                    _logger($"-> Şifreli Key (Cipher): {encryptedMasterKey.Substring(0, 20)}...");
+
                     Packet keyPacket = new Packet { Header = "MASTER_KEY", SenderID = MyID, Payload = encryptedMasterKey };
                     byte[] keyBytes = Encoding.UTF8.GetBytes(keyPacket.ToJson());
                     await _activeStream.WriteAsync(keyBytes, 0, keyBytes.Length);
-                    _logger("Master Key (Şifreli) gönderildi.");
+                    _logger("-> Şifreli Master Key gönderildi.");
                 }
                 else
                 {
+                    _logger("ADIM 8: Şifreli Master Key Bekleniyor...");
                     bytesRead = await _activeStream.ReadAsync(buffer, 0, buffer.Length);
                     Packet keyPacket = Packet.FromJson(Encoding.UTF8.GetString(buffer, 0, bytesRead));
+
+                    _logger($"-> Şifreli Paket Alındı: {keyPacket.Payload.Substring(0, 20)}...");
+                    _logger("-> Kendi Private Key'im ile şifre çözülüyor (Decrypt)...");
                     _masterKey = CryptoHelper.DecryptRSA(keyPacket.Payload, MyPrivateKey);
-                    _logger("Master Key alındı ve çözüldü.");
+                    _logger($"-> Çözülen AES Key (Plain): {_masterKey.Substring(0, 20)}...");
                 }
 
-                // IV üretimi (Basitlik için Key'in hash'inden üretiyoruz ki iki tarafta da aynı olsun)
+                // IV Türetme
                 using (var sha = System.Security.Cryptography.SHA256.Create())
                 {
                     byte[] keyHash = sha.ComputeHash(Encoding.UTF8.GetBytes(_masterKey));
@@ -152,10 +178,11 @@ namespace Guvenlik.Client
                     Array.Copy(keyHash, ivBytes, 16);
                     _iv = Convert.ToBase64String(ivBytes);
                 }
+                _logger("-> (Session Derivation) Master Key kullanılarak IV (Session Parametresi) türetildi.");
+                _logger("ADIM 9: Güvenli Tünel (AES-256) Hazır! Sohbet Başlayabilir.");
+                _logger("------------------------------------------------");
 
-                _logger("Tünel Hazır! Şifreli sohbet başlayabilir.");
-
-                // 3. Sohbet Döngüsü (Mesaj Dinleme)
+                // --- SOHBET DÖNGÜSÜ ---
                 while (client.Connected)
                 {
                     bytesRead = await _activeStream.ReadAsync(buffer, 0, buffer.Length);
@@ -166,8 +193,9 @@ namespace Guvenlik.Client
 
                     if (chatPacket.Header == "CHAT_MSG")
                     {
-                        // Şifreli mesajı çöz
+                        _logger($"GELEN MESAJ (Şifreli): {chatPacket.Payload.Substring(0, 15)}...");
                         string decryptedMsg = CryptoHelper.DecryptAES(chatPacket.Payload, _masterKey, _iv);
+                        _logger($"-> Çözülen Mesaj: {decryptedMsg}");
                         _chatLogger($"{chatPacket.SenderID}: {decryptedMsg}");
                     }
                 }
@@ -178,13 +206,13 @@ namespace Guvenlik.Client
             }
         }
 
-        // Mesaj Gönderme Fonksiyonu
         public async Task SendChatMessage(string plainText)
         {
             if (_activePeerClient == null || !_activePeerClient.Connected) return;
 
-            // Mesajı AES ile şifrele
+            _logger($"GÖNDERİLİYOR: \"{plainText}\"");
             string encryptedMsg = CryptoHelper.EncryptAES(plainText, _masterKey, _iv);
+            _logger($"-> AES ile Şifrelendi: {encryptedMsg.Substring(0, 15)}...");
 
             Packet msgPacket = new Packet
             {
@@ -196,7 +224,6 @@ namespace Guvenlik.Client
             byte[] data = Encoding.UTF8.GetBytes(msgPacket.ToJson());
             await _activeStream.WriteAsync(data, 0, data.Length);
 
-            // Kendi ekranımıza da yazalım
             _chatLogger($"Ben: {plainText}");
         }
     }
