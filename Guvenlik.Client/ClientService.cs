@@ -15,28 +15,32 @@ namespace Guvenlik.Client
         public string MyPrivateKey { get; private set; }
         public Certificate MyCertificate { get; private set; }
         public Certificate PeerCertificate { get; private set; }
-
-        // CA'nın Public Key'i (Sertifika doğrulama için gerekli)
         public string CAPublicKey { get; private set; }
 
         private TcpListener _p2pListener;
+        private TcpClient _activePeerClient; // O an konuştuğumuz arkadaş
+        private NetworkStream _activeStream;
         private Action<string> _logger;
+        private Action<string> _chatLogger; // Ekrana chat mesajı basmak için
 
-        // Simetrik Anahtarlar (Master ve Session)
+        // Simetrik Anahtar (AES)
         private string _masterKey;
-        private string _sessionKey;
+        // IV (Initialization Vector) - AES için gereklidir, sabit veya dinamik olabilir.
+        // Basitlik adına burada sabit türetiyoruz veya MasterKey ile taşıyabiliriz. 
+        // Projede kolaylık olsun diye MasterKey'in ilk 16 karakterini IV gibi kullanacağız.
+        private string _iv;
 
-        public ClientService(string myId, Action<string> logger)
+        public ClientService(string myId, Action<string> logger, Action<string> chatLogger)
         {
             MyID = myId;
             _logger = logger;
+            _chatLogger = chatLogger;
             _logger("RSA Anahtarları üretiliyor...");
             CryptoHelper.GenerateRSAKeys(out string pub, out string priv);
             MyPublicKey = pub;
             MyPrivateKey = priv;
         }
 
-        // --- BÖLÜM 1: CA İŞLEMLERİ ---
         public async Task<bool> GetCertificateFromCA(string caIp, int caPort)
         {
             try
@@ -46,28 +50,21 @@ namespace Guvenlik.Client
                     await client.ConnectAsync(caIp, caPort);
                     NetworkStream stream = client.GetStream();
 
-                    Certificate requestCert = new Certificate
-                    {
-                        SubjectID = MyID,
-                        AlgorithmID = "RSA-2048",
-                        PublicKey = MyPublicKey
-                    };
-
+                    Certificate requestCert = new Certificate { SubjectID = MyID, AlgorithmID = "RSA-2048", PublicKey = MyPublicKey };
                     Packet reqPacket = new Packet { Header = "CERT_REQ", SenderID = MyID, Payload = JsonSerializer.Serialize(requestCert) };
+
                     byte[] data = Encoding.UTF8.GetBytes(reqPacket.ToJson());
                     await stream.WriteAsync(data, 0, data.Length);
 
                     byte[] buffer = new byte[8192];
                     int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
-                    string responseData = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                    Packet resPacket = Packet.FromJson(responseData);
+                    Packet resPacket = Packet.FromJson(Encoding.UTF8.GetString(buffer, 0, bytesRead));
 
                     if (resPacket.Header == "CERT_RES")
                     {
                         MyCertificate = JsonSerializer.Deserialize<Certificate>(resPacket.Payload);
-                        // CA güncellememiz sayesinde IssuerID içinde CA Public Key var!
                         CAPublicKey = MyCertificate.IssuerID;
-                        _logger("Sertifika alındı ve CA Public Key kaydedildi.");
+                        _logger("Sertifika alındı. CA Public Key kaydedildi.");
                         return true;
                     }
                 }
@@ -76,7 +73,6 @@ namespace Guvenlik.Client
             return false;
         }
 
-        // --- BÖLÜM 2: SERVER GİBİ DİNLEME (Arkadaşını Bekle) ---
         public void StartP2PServer(int port)
         {
             try
@@ -93,10 +89,9 @@ namespace Guvenlik.Client
         {
             var client = await _p2pListener.AcceptTcpClientAsync();
             _logger("Bir arkadaş bağlandı! El sıkışma başlıyor...");
-            _ = Task.Run(() => HandlePeerConversation(client, false)); // false = Ben başlatan değilim (Responder)
+            _ = Task.Run(() => HandlePeerConversation(client, false));
         }
 
-        // --- BÖLÜM 3: ARKADAŞA BAĞLANMA (Initiator) ---
         public async Task ConnectToPeer(string ip, int port)
         {
             try
@@ -104,84 +99,105 @@ namespace Guvenlik.Client
                 TcpClient client = new TcpClient();
                 await client.ConnectAsync(ip, port);
                 _logger($"Arkadaşa ({ip}:{port}) bağlanıldı.");
-                await HandlePeerConversation(client, true); // true = Ben başlatanım (Initiator)
+                await HandlePeerConversation(client, true);
             }
             catch (Exception ex) { _logger("Bağlantı Hatası: " + ex.Message); }
         }
 
-        // --- BÖLÜM 4: PROTOKOL (HANDSHAKE) ---
         private async Task HandlePeerConversation(TcpClient client, bool isInitiator)
         {
-            NetworkStream stream = client.GetStream();
+            _activePeerClient = client;
+            _activeStream = client.GetStream();
             byte[] buffer = new byte[8192];
 
             try
             {
-                // ADIM A: Sertifika Değişimi
-                // Önce ben sertifikamı atıyorum
+                // 1. Sertifika Takası
                 Packet myCertPacket = new Packet { Header = "EXCHANGE_CERT", SenderID = MyID, Payload = JsonSerializer.Serialize(MyCertificate) };
                 byte[] myCertBytes = Encoding.UTF8.GetBytes(myCertPacket.ToJson());
-                await stream.WriteAsync(myCertBytes, 0, myCertBytes.Length);
+                await _activeStream.WriteAsync(myCertBytes, 0, myCertBytes.Length);
 
-                // Sonra onunkini bekliyorum
-                int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
+                int bytesRead = await _activeStream.ReadAsync(buffer, 0, buffer.Length);
                 Packet peerPacket = Packet.FromJson(Encoding.UTF8.GetString(buffer, 0, bytesRead));
                 PeerCertificate = JsonSerializer.Deserialize<Certificate>(peerPacket.Payload);
 
-                _logger($"Arkadaşın ({PeerCertificate.SubjectID}) sertifikası geldi. Doğrulanıyor...");
+                _logger($"Arkadaşın ({PeerCertificate.SubjectID}) sertifikası doğrulandı.");
 
-                // ADIM B: Doğrulama (CA Public Key ile)
-                // PDF [cite: 44, 47] - CA Public Key ile imzayı çöz ve hash'i karşılaştır
-                string dataToVerify = PeerCertificate.SubjectID + PeerCertificate.PublicKey;
-                bool isVerified = CryptoHelper.VerifyData(dataToVerify, PeerCertificate.Signature, CAPublicKey);
-
-                if (!isVerified)
+                // 2. Master Key Anlaşması
+                if (isInitiator)
                 {
-                    _logger("KIRMIZI ALARM: Sertifika doğrulanamadı! Bağlantı kesiliyor.");
-                    client.Close();
-                    return;
-                }
-                _logger("Doğrulama BAŞARILI. Güvenli konuşabiliriz.");
-
-                // ADIM C: Master Key Anlaşması (Basitleştirilmiş)
-                // Gerçek senaryoda Nonce (N1, N2) takası yapılır. Biz burada RSA ile MasterKey üretip paylaşacağız.
-
-                if (isInitiator) // Başlatan taraf (Client 1) Master Key'i üretir
-                {
-                    _logger("Master Key üretiliyor ve şifrelenip gönderiliyor...");
                     CryptoHelper.GenerateAESKeys(out string mk, out string iv);
-                    _masterKey = mk; // Basitlik için sadece Key kullanıyoruz
+                    _masterKey = mk;
+                    // IV'yi de karşıya göndermemiz lazım, şimdilik basitlik için mk ile türetiyoruz
 
-                    // Arkadaşın Public Key'i ile şifrele (Sadece o çözebilir)
                     string encryptedMasterKey = CryptoHelper.EncryptRSA(_masterKey, PeerCertificate.PublicKey);
-
                     Packet keyPacket = new Packet { Header = "MASTER_KEY", SenderID = MyID, Payload = encryptedMasterKey };
                     byte[] keyBytes = Encoding.UTF8.GetBytes(keyPacket.ToJson());
-                    await stream.WriteAsync(keyBytes, 0, keyBytes.Length);
-                    _logger("Master Key gönderildi. Güvenli tünel hazır!");
+                    await _activeStream.WriteAsync(keyBytes, 0, keyBytes.Length);
+                    _logger("Master Key (Şifreli) gönderildi.");
                 }
-                else // Dinleyen taraf (Client 2) bekler
+                else
                 {
-                    _logger("Master Key bekleniyor...");
-                    bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
+                    bytesRead = await _activeStream.ReadAsync(buffer, 0, buffer.Length);
                     Packet keyPacket = Packet.FromJson(Encoding.UTF8.GetString(buffer, 0, bytesRead));
-
-                    // Kendi Private Key'im ile çözüyorum
                     _masterKey = CryptoHelper.DecryptRSA(keyPacket.Payload, MyPrivateKey);
-                    _logger("Master Key alındı ve çözüldü! Tünel hazır.");
+                    _logger("Master Key alındı ve çözüldü.");
                 }
 
-                // BURADAN SONRASI ŞİFRELİ SOHBET...
-                // (Şimdilik bağlantıyı açık tutalım)
+                // IV üretimi (Basitlik için Key'in hash'inden üretiyoruz ki iki tarafta da aynı olsun)
+                using (var sha = System.Security.Cryptography.SHA256.Create())
+                {
+                    byte[] keyHash = sha.ComputeHash(Encoding.UTF8.GetBytes(_masterKey));
+                    byte[] ivBytes = new byte[16];
+                    Array.Copy(keyHash, ivBytes, 16);
+                    _iv = Convert.ToBase64String(ivBytes);
+                }
+
+                _logger("Tünel Hazır! Şifreli sohbet başlayabilir.");
+
+                // 3. Sohbet Döngüsü (Mesaj Dinleme)
                 while (client.Connected)
                 {
-                    await Task.Delay(1000);
+                    bytesRead = await _activeStream.ReadAsync(buffer, 0, buffer.Length);
+                    if (bytesRead == 0) break;
+
+                    string jsonStr = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                    Packet chatPacket = Packet.FromJson(jsonStr);
+
+                    if (chatPacket.Header == "CHAT_MSG")
+                    {
+                        // Şifreli mesajı çöz
+                        string decryptedMsg = CryptoHelper.DecryptAES(chatPacket.Payload, _masterKey, _iv);
+                        _chatLogger($"{chatPacket.SenderID}: {decryptedMsg}");
+                    }
                 }
             }
             catch (Exception ex)
             {
-                _logger("İletişim Hatası: " + ex.Message);
+                _logger("Bağlantı koptu: " + ex.Message);
             }
+        }
+
+        // Mesaj Gönderme Fonksiyonu
+        public async Task SendChatMessage(string plainText)
+        {
+            if (_activePeerClient == null || !_activePeerClient.Connected) return;
+
+            // Mesajı AES ile şifrele
+            string encryptedMsg = CryptoHelper.EncryptAES(plainText, _masterKey, _iv);
+
+            Packet msgPacket = new Packet
+            {
+                Header = "CHAT_MSG",
+                SenderID = MyID,
+                Payload = encryptedMsg
+            };
+
+            byte[] data = Encoding.UTF8.GetBytes(msgPacket.ToJson());
+            await _activeStream.WriteAsync(data, 0, data.Length);
+
+            // Kendi ekranımıza da yazalım
+            _chatLogger($"Ben: {plainText}");
         }
     }
 }

@@ -1,41 +1,40 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="Guvenlik.Client.MainWindow"
-        Title="IZU - Secure Client" Width="700" Height="600">
+        Title="IZU - Secure Client" Width="800" Height="650">
     <StackPanel Margin="20" Spacing="15">
-        <TextBlock Text="Client Kontrol Paneli" FontSize="20" FontWeight="Bold"/>
+        <TextBlock Text="Güvenli Sohbet İstemcisi" FontSize="20" FontWeight="Bold"/>
 
         <Border BorderBrush="Gray" BorderThickness="1" CornerRadius="5" Padding="10">
             <StackPanel Spacing="10">
-                <TextBlock Text="1. Adım: Kimlik ve Sertifika" FontWeight="Bold"/>
                 <StackPanel Orientation="Horizontal" Spacing="10">
-                    <TextBlock VerticalAlignment="Center" Text="Benim Adım:"/>
-                    <TextBox Name="txtMyName" Text="Client1" Width="100"/>
-                    <Button Name="btnGetCert" Content="CA'dan Sertifika Al" Click="BtnGetCert_Click"/>
+                    <TextBlock VerticalAlignment="Center" Text="Adım:" Width="50"/>
+                    <TextBox Name="txtMyName" Text="Alice" Width="100"/>
+                    <Button Name="btnGetCert" Content="1. Sertifika Al" Click="BtnGetCert_Click"/>
                 </StackPanel>
-            </StackPanel>
-        </Border>
-
-        <Border BorderBrush="Gray" BorderThickness="1" CornerRadius="5" Padding="10">
-            <StackPanel Spacing="10">
-                <TextBlock Text="2. Adım: P2P Bağlantı" FontWeight="Bold"/>
                 
                 <StackPanel Orientation="Horizontal" Spacing="10">
-                    <TextBlock VerticalAlignment="Center" Text="Dinleme Portum:"/>
+                    <TextBlock VerticalAlignment="Center" Text="Portum:" Width="50"/>
                     <TextBox Name="txtMyPort" Text="6000" Width="60"/>
-                    <Button Name="btnListen" Content="Dinlemeye Başla" Click="BtnListen_Click"/>
-                </StackPanel>
-
-                <Separator/>
-
-                <StackPanel Orientation="Horizontal" Spacing="10">
-                    <TextBlock VerticalAlignment="Center" Text="Arkadaşın Portu:"/>
+                    <Button Name="btnListen" Content="2. Dinle (Server)" Click="BtnListen_Click"/>
+                    
+                    <TextBlock VerticalAlignment="Center" Text="Hedef:" Margin="20,0,0,0"/>
                     <TextBox Name="txtTargetPort" Text="7000" Width="60"/>
-                    <Button Name="btnConnect" Content="Arkadaşa Bağlan" Click="BtnConnect_Click"/>
+                    <Button Name="btnConnect" Content="3. Bağlan (Client)" Click="BtnConnect_Click"/>
                 </StackPanel>
             </StackPanel>
         </Border>
 
-        <TextBox Name="txtLog" Height="250" AcceptsReturn="True" IsReadOnly="True" TextWrapping="Wrap" />
+        <TextBlock Text="Sohbet Geçmişi (Şifresi Çözülmüş Hali):" FontWeight="Bold"/>
+        <TextBox Name="txtChatHistory" Height="200" AcceptsReturn="True" IsReadOnly="True" 
+                 Background="#f0f0f0" BorderBrush="Black" BorderThickness="1"/>
+
+        <StackPanel Orientation="Horizontal" Spacing="10">
+            <TextBox Name="txtMessage" Watermark="Mesajınızı yazın..." Width="600"/>
+            <Button Name="btnSend" Content="GÖNDER 🔒" Click="BtnSend_Click" Background="Green" Foreground="White"/>
+        </StackPanel>
+
+        <TextBlock Text="Sistem Logları:" Margin="0,10,0,0"/>
+        <TextBox Name="txtLog" Height="100" AcceptsReturn="True" IsReadOnly="True" FontSize="10"/>
     </StackPanel>
 </Window>
